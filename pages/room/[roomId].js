@@ -33,8 +33,8 @@ const ICE_SERVERS = {
 
 // Sign language recognition config (matching Python script)
 const CLIP_FRAMES = 32
-const MIN_CONFIDENCE = 0.3  // Lowered to show more predictions (was 0.6)
-const MIN_MOTION_SCORE = 2.3  // Motion threshold to START capturing
+const MIN_CONFIDENCE = 0.6  // Minimum confidence to accept prediction
+const MIN_MOTION_SCORE = 5.0  // Motion threshold to START capturing (raised from 2.3)
 const LOW_MOTION_FRAMES = 3   // Frames of low motion to STOP capturing
 const MAX_CAPTURE_SECONDS = 3.5 // Max capture duration (32 frames at 10fps = 3.2s)
 const REQUEST_INTERVAL = 1.5  // Cooldown between requests (seconds)
