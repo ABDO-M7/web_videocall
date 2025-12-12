@@ -404,8 +404,14 @@ export default function Room() {
         // Increase delay with each consecutive no-speech (backoff)
         restartDelayRef.current = Math.min(3000, 500 * noSpeechCountRef.current)
         console.log(`No speech detected (${noSpeechCountRef.current}x), next restart in ${restartDelayRef.current}ms`)
+      } else if (event.error === 'network') {
+        // Network error - stop and alert user
+        console.error('Network error - stopping STT. Check internet connection.')
+        isListeningRef.current = false
+        setIsListening(false)
+        alert('Speech recognition requires internet connection. Please check your network.')
       } else if (event.error !== 'aborted') {
-        // Real error - stop listening
+        // Other real error - stop listening
         isListeningRef.current = false
         setIsListening(false)
       }
