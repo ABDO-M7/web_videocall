@@ -5,7 +5,7 @@ import Head from 'next/head'
 
 export default function Home() {
   const [roomId, setRoomId] = useState('')
-  const [role, setRole] = useState('deaf') // 'deaf' or 'hearing'
+  const [role, setRole] = useState('') // 'deaf' or 'hearing' - must be selected
   const router = useRouter()
 
   const createRoom = () => {
@@ -75,9 +75,10 @@ export default function Home() {
 
           <button
             onClick={createRoom}
-            className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white font-semibold py-4 px-6 rounded-xl transition-all duration-200 transform hover:scale-[1.02] shadow-lg mb-6"
+            disabled={!role}
+            className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 disabled:from-gray-600 disabled:to-gray-600 disabled:cursor-not-allowed text-white font-semibold py-4 px-6 rounded-xl transition-all duration-200 transform hover:scale-[1.02] disabled:hover:scale-100 shadow-lg mb-6"
           >
-            Create New Room
+            {role ? 'Create New Room' : 'Select your role first'}
           </button>
 
           <div className="relative mb-6">
@@ -99,10 +100,10 @@ export default function Home() {
             />
             <button
               type="submit"
-              disabled={!roomId.trim()}
+              disabled={!roomId.trim() || !role}
               className="w-full bg-white/10 hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-4 px-6 rounded-xl transition-all duration-200 border border-white/20"
             >
-              Join Room
+              {role ? 'Join Room' : 'Select your role first'}
             </button>
           </form>
 
