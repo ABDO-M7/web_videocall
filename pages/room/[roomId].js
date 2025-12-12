@@ -7,31 +7,28 @@ const ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    // Free TURN servers from Metered
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    // Xirsys free TURN servers
     {
-      urls: 'stun:stun.relay.metered.ca:80',
+      urls: 'turn:turn.bistri.com:80',
+      username: 'homeo',
+      credential: 'homeo',
+    },
+    // Additional public TURN
+    {
+      urls: 'turn:numb.viagenie.ca',
+      username: 'webrtc@live.com',
+      credential: 'muazkh',
     },
     {
-      urls: 'turn:global.relay.metered.ca:80',
-      username: 'e8dd65c92f6a8b2d09f8a4e6',
-      credential: 'kxLgGzsSvE/u+fut',
-    },
-    {
-      urls: 'turn:global.relay.metered.ca:80?transport=tcp',
-      username: 'e8dd65c92f6a8b2d09f8a4e6',
-      credential: 'kxLgGzsSvE/u+fut',
-    },
-    {
-      urls: 'turn:global.relay.metered.ca:443',
-      username: 'e8dd65c92f6a8b2d09f8a4e6',
-      credential: 'kxLgGzsSvE/u+fut',
-    },
-    {
-      urls: 'turns:global.relay.metered.ca:443?transport=tcp',
-      username: 'e8dd65c92f6a8b2d09f8a4e6',
-      credential: 'kxLgGzsSvE/u+fut',
+      urls: 'turn:numb.viagenie.ca:3478',
+      username: 'webrtc@live.com', 
+      credential: 'muazkh',
     },
   ],
+  iceCandidatePoolSize: 10,
 }
 
 export default function Room() {
