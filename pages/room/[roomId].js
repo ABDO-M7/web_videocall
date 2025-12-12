@@ -37,6 +37,7 @@ const MIN_CONFIDENCE = 0.6
 const MIN_MOTION_SCORE = 2.3  // Motion threshold to START capturing
 const LOW_MOTION_FRAMES = 3   // Frames of low motion to STOP capturing
 const MAX_CAPTURE_SECONDS = 2.0 // Max capture duration
+const REQUEST_INTERVAL = 1.5  // Cooldown between requests (seconds)
 
 export default function Room() {
   const router = useRouter()
@@ -56,7 +57,8 @@ export default function Room() {
   const [signStatus, setSignStatus] = useState('idle') // idle, ready, capturing, processing
   const [peerRole, setPeerRole] = useState(null)
   const [motionScore, setMotionScore] = useState(0)
-  const [autoCapture, setAutoCapture] = useState(true) // Auto-detect motion
+  const [captureFrameCount, setCaptureFrameCount] = useState(0)
+  const [cooldownTime, setCooldownTime] = useState(0)
 
   const localVideoRef = useRef(null)
   const remoteVideoRef = useRef(null)
@@ -74,6 +76,7 @@ export default function Room() {
   const captureStartTimeRef = useRef(0)
   const isProcessingRef = useRef(false)
   const isCapturingRef = useRef(false) // Use ref to avoid closure issues
+  const lastRequestTimeRef = useRef(0) // For REQUEST_INTERVAL cooldown
 
   const triggerEvent = useCallback(async (event, data) => {
     try {
@@ -323,7 +326,7 @@ export default function Room() {
     }
   }, [triggerEvent])
 
-  // Motion-based sign language capture (like Python script)
+  // Motion-based sign language capture (like Python script exactly)
   const startMotionDetection = useCallback(() => {
     if (role !== 'deaf' || captureIntervalRef.current) return
     
@@ -332,35 +335,44 @@ export default function Room() {
     isProcessingRef.current = false
     frameBufferRef.current = []
     prevGrayRef.current = null
+    lastRequestTimeRef.current = 0
     
     captureIntervalRef.current = setInterval(() => {
       const motion = computeMotionScore()
       setMotionScore(motion)
       
       const now = Date.now()
+      const timeSinceLast = (now - lastRequestTimeRef.current) / 1000
+      const timeToNext = Math.max(0, REQUEST_INTERVAL - timeSinceLast)
+      setCooldownTime(timeToNext)
       
-      // State machine like Python script (using refs to avoid closure issues)
-      if (!isCapturingRef.current && !isProcessingRef.current) {
-        // READY state - waiting for motion to start
-        if (motion >= MIN_MOTION_SCORE) {
-          // Motion detected! Start capturing
-          console.log('Motion detected! Starting capture. Motion:', motion)
-          isCapturingRef.current = true
-          setIsCapturing(true)
-          setSignStatus('capturing')
-          frameBufferRef.current = []
-          lowMotionCountRef.current = 0
-          captureStartTimeRef.current = now
-        }
+      // Update frame count display
+      setCaptureFrameCount(frameBufferRef.current.length)
+      
+      // Can we start capturing? (like Python: not capturing, not inflight, cooldown done, motion detected)
+      const canStartCapture = (
+        !isCapturingRef.current &&
+        !isProcessingRef.current &&
+        timeToNext <= 0 &&
+        motion >= MIN_MOTION_SCORE
+      )
+      
+      if (canStartCapture) {
+        // Motion detected! Start capturing
+        console.log('Motion detected! Starting capture. Motion:', motion.toFixed(1))
+        isCapturingRef.current = true
+        setIsCapturing(true)
+        setSignStatus('capturing')
+        frameBufferRef.current = []
+        lowMotionCountRef.current = 0
+        captureStartTimeRef.current = now
       }
       
       if (isCapturingRef.current) {
-        // CAPTURING state - record frames
+        // CAPTURING state - record frames (keep only last CLIP_FRAMES like Python deque)
         const frame = captureFrame()
         if (frame) {
           frameBufferRef.current.push(frame)
-          
-          // Keep only last CLIP_FRAMES
           if (frameBufferRef.current.length > CLIP_FRAMES) {
             frameBufferRef.current.shift()
           }
@@ -373,23 +385,25 @@ export default function Room() {
           lowMotionCountRef.current = 0
         }
         
-        // Check if should finish capturing
+        // Check if should finish capturing (like Python)
         const enoughFrames = frameBufferRef.current.length >= CLIP_FRAMES
         const stableEnough = lowMotionCountRef.current >= LOW_MOTION_FRAMES
         const timeLong = (now - captureStartTimeRef.current) >= MAX_CAPTURE_SECONDS * 1000
+        const shouldFinish = (enoughFrames && stableEnough) || timeLong
         
-        if ((enoughFrames && stableEnough) || timeLong) {
+        if (shouldFinish && frameBufferRef.current.length > 0) {
           console.log('Finishing capture. Frames:', frameBufferRef.current.length, 'LowMotion:', lowMotionCountRef.current)
           
-          // Finish capturing and send for prediction
+          const frames = [...frameBufferRef.current]
           isCapturingRef.current = false
           setIsCapturing(false)
+          lowMotionCountRef.current = 0
           
-          if (frameBufferRef.current.length >= 10) {
-            const frames = [...frameBufferRef.current]
-            frameBufferRef.current = []
+          if (frames.length >= 10 && !isProcessingRef.current) {
             isProcessingRef.current = true
+            lastRequestTimeRef.current = now
             setSignStatus('processing')
+            frameBufferRef.current = []
             
             sendForPrediction(frames).finally(() => {
               isProcessingRef.current = false
@@ -398,7 +412,6 @@ export default function Room() {
           } else {
             setSignStatus('ready')
           }
-          lowMotionCountRef.current = 0
         }
       }
     }, 100) // ~10fps motion detection
@@ -666,7 +679,7 @@ export default function Room() {
                 <span>🔤</span> Sign Translation
               </h3>
               
-              {/* Status */}
+              {/* Status (like Python overlay) */}
               <div className={`rounded-xl p-3 mb-3 ${
                 signStatus === 'idle' ? 'bg-slate-700/50' :
                 signStatus === 'ready' ? 'bg-green-900/30 border border-green-500/30' :
@@ -681,12 +694,17 @@ export default function Room() {
                   'text-yellow-400'
                 }`}>
                   {signStatus === 'idle' ? '⏸ Click 🤟 to start' :
-                   signStatus === 'ready' ? '✓ Ready - perform sign' :
-                   signStatus === 'capturing' ? '● Recording sign...' :
-                   '⏳ Processing...'}
+                   signStatus === 'ready' ? (cooldownTime > 0 ? `waiting (${cooldownTime.toFixed(1)}s)` : '✓ READY - perform sign') :
+                   signStatus === 'capturing' ? '● CAPTURING - keep signing' :
+                   '⏳ SENDING clip to API...'}
                 </p>
                 {signStatus !== 'idle' && (
-                  <p className="text-slate-500 text-xs mt-1">Motion: {motionScore.toFixed(1)}</p>
+                  <div className="text-slate-500 text-xs mt-1 space-y-0.5">
+                    <p>Motion: {motionScore.toFixed(1)} {motionScore >= MIN_MOTION_SCORE ? '🟢' : '⚪'}</p>
+                    {signStatus === 'capturing' && (
+                      <p>Capturing: {captureFrameCount}/{CLIP_FRAMES} frames</p>
+                    )}
+                  </div>
                 )}
               </div>
 
