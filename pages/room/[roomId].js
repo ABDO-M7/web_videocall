@@ -36,7 +36,7 @@ const CLIP_FRAMES = 32
 const MIN_CONFIDENCE = 0.6
 const MIN_MOTION_SCORE = 2.3  // Motion threshold to START capturing
 const LOW_MOTION_FRAMES = 3   // Frames of low motion to STOP capturing
-const MAX_CAPTURE_SECONDS = 2.0 // Max capture duration
+const MAX_CAPTURE_SECONDS = 3.5 // Max capture duration (32 frames at 10fps = 3.2s)
 const REQUEST_INTERVAL = 1.5  // Cooldown between requests (seconds)
 
 export default function Room() {
@@ -241,12 +241,13 @@ export default function Room() {
       
       const stream = canvas.captureStream(25)
       
-      // Check supported mime types
-      const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') 
-        ? 'video/webm;codecs=vp9'
-        : MediaRecorder.isTypeSupported('video/webm')
-          ? 'video/webm'
-          : 'video/mp4'
+      // Check supported mime types - prefer mp4 if available
+      let mimeType = 'video/webm'
+      if (MediaRecorder.isTypeSupported('video/mp4')) {
+        mimeType = 'video/mp4'
+      } else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8')) {
+        mimeType = 'video/webm;codecs=vp8'
+      }
       
       const recorder = new MediaRecorder(stream, { mimeType })
       const chunks = []
@@ -262,7 +263,7 @@ export default function Room() {
         recorder.start()
         
         let frameIndex = 0
-        const ctx = canvas.getContext('2d')
+        const ctx = canvas.getContext('2d', { willReadFrequently: true })
         
         const drawNextFrame = () => {
           if (frameIndex < frames.length) {
@@ -284,21 +285,20 @@ export default function Room() {
         drawNextFrame()
       })
       
-      // Convert to base64
-      const blob = new Blob(chunks, { type: mimeType })
-      console.log('Video blob size:', blob.size)
+      // Create blob and send as FormData (like Python does)
+      const videoBlob = new Blob(chunks, { type: mimeType })
+      console.log('Video blob size:', videoBlob.size, 'type:', mimeType)
       
-      const base64 = await new Promise((resolve) => {
-        const reader = new FileReader()
-        reader.onloadend = () => resolve(reader.result.split(',')[1])
-        reader.readAsDataURL(blob)
-      })
+      // Send as FormData to match Python's multipart/form-data
+      const formData = new FormData()
+      const extension = mimeType.includes('mp4') ? 'mp4' : 'webm'
+      formData.append('video', videoBlob, `clip.${extension}`)
+      formData.append('top_k', '5')
       
-      // Send to API
-      const response = await fetch('/api/sign/predict', {
+      // Send directly to HuggingFace API (bypass our API route)
+      const response = await fetch('https://khalood619-signbridge-api.hf.space/sign/predict', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ videoBlob: base64, topK: 5 }),
+        body: formData,
       })
       
       const result = await response.json()
@@ -318,8 +318,8 @@ export default function Room() {
           gloss: result.gloss, 
           probability: result.probability 
         })
-      } else if (result.error) {
-        console.error('API error:', result.error, result.details)
+      } else if (result.error || result.detail) {
+        console.error('API error:', result.error || result.detail)
       }
     } catch (error) {
       console.error('Sign prediction error:', error)
