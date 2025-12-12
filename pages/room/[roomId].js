@@ -68,6 +68,8 @@ export default function Room() {
   const [speechTranscript, setSpeechTranscript] = useState([])
   const recognitionRef = useRef(null)
   const isListeningRef = useRef(false)
+  const noSpeechCountRef = useRef(0)  // Track consecutive no-speech errors
+  const restartDelayRef = useRef(500) // Backoff delay for restarts
 
   const localVideoRef = useRef(null)
   const remoteVideoRef = useRef(null)
@@ -394,7 +396,26 @@ export default function Room() {
       setIsListening(true)
     }
     
+    recognition.onerror = (event) => {
+      console.error('Speech recognition error:', event.error)
+      if (event.error === 'no-speech') {
+        // Track consecutive no-speech errors
+        noSpeechCountRef.current += 1
+        // Increase delay with each consecutive no-speech (backoff)
+        restartDelayRef.current = Math.min(3000, 500 * noSpeechCountRef.current)
+        console.log(`No speech detected (${noSpeechCountRef.current}x), next restart in ${restartDelayRef.current}ms`)
+      } else if (event.error !== 'aborted') {
+        // Real error - stop listening
+        isListeningRef.current = false
+        setIsListening(false)
+      }
+    }
+    
     recognition.onresult = (event) => {
+      // Reset no-speech counter when we get actual speech
+      noSpeechCountRef.current = 0
+      restartDelayRef.current = 500
+      
       let interimTranscript = ''
       let finalTranscript = ''
       
@@ -424,19 +445,12 @@ export default function Room() {
       }
     }
     
-    recognition.onerror = (event) => {
-      console.error('Speech recognition error:', event.error)
-      // Don't stop on no-speech or aborted errors
-      if (event.error !== 'no-speech' && event.error !== 'aborted') {
-        isListeningRef.current = false
-        setIsListening(false)
-      }
-    }
-    
     recognition.onend = () => {
       console.log('Speech recognition ended, isListening:', isListeningRef.current)
-      // Restart if still supposed to be listening (with small delay for stability)
+      // Restart if still supposed to be listening (with backoff delay)
       if (isListeningRef.current) {
+        const delay = restartDelayRef.current
+        console.log(`Restarting in ${delay}ms...`)
         setTimeout(() => {
           if (isListeningRef.current && recognitionRef.current) {
             try {
@@ -444,12 +458,11 @@ export default function Room() {
               console.log('Speech recognition restarted')
             } catch (e) {
               console.error('Failed to restart recognition:', e)
-              // If restart fails, try creating new instance
               isListeningRef.current = false
               setIsListening(false)
             }
           }
-        }, 100)
+        }, delay)
       } else {
         setIsListening(false)
       }
@@ -469,6 +482,9 @@ export default function Room() {
     console.log('Stopping speech recognition')
     isListeningRef.current = false
     setIsListening(false)
+    // Reset backoff counters
+    noSpeechCountRef.current = 0
+    restartDelayRef.current = 500
     if (recognitionRef.current) {
       try {
         recognitionRef.current.stop()
