@@ -31,15 +31,28 @@ const ICE_SERVERS = {
   iceCandidatePoolSize: 10,
 }
 
+// Sign language recognition config
+const CLIP_FRAMES = 32
+const MIN_CONFIDENCE = 0.6
+const CAPTURE_INTERVAL = 2000 // ms between captures
+
 export default function Room() {
   const router = useRouter()
-  const { roomId } = router.query
+  const { roomId, role } = router.query
 
   const [isConnected, setIsConnected] = useState(false)
   const [isMuted, setIsMuted] = useState(false)
   const [isVideoOff, setIsVideoOff] = useState(false)
   const [connectionStatus, setConnectionStatus] = useState('Connecting...')
   const [copied, setCopied] = useState(false)
+  
+  // Sign language states
+  const [currentSign, setCurrentSign] = useState(null)
+  const [signConfidence, setSignConfidence] = useState(0)
+  const [transcript, setTranscript] = useState([])
+  const [isCapturing, setIsCapturing] = useState(false)
+  const [signStatus, setSignStatus] = useState('idle') // idle, capturing, processing
+  const [peerRole, setPeerRole] = useState(null)
 
   const localVideoRef = useRef(null)
   const remoteVideoRef = useRef(null)
@@ -48,6 +61,10 @@ export default function Room() {
   const pusherRef = useRef(null)
   const channelRef = useRef(null)
   const userIdRef = useRef(null)
+  const canvasRef = useRef(null)
+  const frameBufferRef = useRef([])
+  const captureIntervalRef = useRef(null)
+  const mediaRecorderRef = useRef(null)
 
   const triggerEvent = useCallback(async (event, data) => {
     try {
@@ -143,6 +160,126 @@ export default function Room() {
     triggerEvent('offer', { offer })
   }, [createPeerConnection, triggerEvent])
 
+  // Capture frames from video for sign language recognition
+  const captureFrames = useCallback(() => {
+    if (!localVideoRef.current || !canvasRef.current) return null
+    
+    const video = localVideoRef.current
+    const canvas = canvasRef.current
+    const ctx = canvas.getContext('2d')
+    
+    canvas.width = video.videoWidth || 640
+    canvas.height = video.videoHeight || 480
+    
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+    return canvas.toDataURL('image/jpeg', 0.8)
+  }, [])
+
+  // Send video clip for sign prediction
+  const sendForPrediction = useCallback(async (frames) => {
+    if (frames.length < 10) return // Need minimum frames
+    
+    setSignStatus('processing')
+    
+    try {
+      // Create a video blob from frames
+      const canvas = canvasRef.current
+      const stream = canvas.captureStream(25)
+      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' })
+      const chunks = []
+      
+      recorder.ondataavailable = (e) => chunks.push(e.data)
+      
+      await new Promise((resolve) => {
+        recorder.onstop = resolve
+        recorder.start()
+        
+        // Draw frames to canvas
+        let frameIndex = 0
+        const drawFrame = () => {
+          if (frameIndex < frames.length) {
+            const img = new Image()
+            img.onload = () => {
+              const ctx = canvas.getContext('2d')
+              ctx.drawImage(img, 0, 0)
+              frameIndex++
+              setTimeout(drawFrame, 40) // ~25fps
+            }
+            img.src = frames[frameIndex]
+          } else {
+            recorder.stop()
+          }
+        }
+        drawFrame()
+      })
+      
+      const blob = new Blob(chunks, { type: 'video/webm' })
+      const base64 = await new Promise((resolve) => {
+        const reader = new FileReader()
+        reader.onloadend = () => resolve(reader.result.split(',')[1])
+        reader.readAsDataURL(blob)
+      })
+      
+      const response = await fetch('/api/sign/predict', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ videoBlob: base64, topK: 5 }),
+      })
+      
+      if (response.ok) {
+        const result = await response.json()
+        if (result.gloss && result.probability >= MIN_CONFIDENCE) {
+          setCurrentSign(result.gloss)
+          setSignConfidence(result.probability)
+          setTranscript(prev => {
+            if (prev[prev.length - 1] !== result.gloss) {
+              return [...prev, result.gloss]
+            }
+            return prev
+          })
+          // Send translation to peer
+          triggerEvent('sign-translation', { 
+            gloss: result.gloss, 
+            probability: result.probability 
+          })
+        }
+      }
+    } catch (error) {
+      console.error('Sign prediction error:', error)
+    } finally {
+      setSignStatus('idle')
+    }
+  }, [triggerEvent])
+
+  // Start/stop sign language capture for deaf users
+  const startSignCapture = useCallback(() => {
+    if (role !== 'deaf' || isCapturing) return
+    
+    setIsCapturing(true)
+    frameBufferRef.current = []
+    
+    captureIntervalRef.current = setInterval(() => {
+      const frame = captureFrames()
+      if (frame) {
+        frameBufferRef.current.push(frame)
+        
+        if (frameBufferRef.current.length >= CLIP_FRAMES) {
+          const frames = [...frameBufferRef.current]
+          frameBufferRef.current = []
+          sendForPrediction(frames)
+        }
+      }
+    }, 100) // Capture at ~10fps, will interpolate
+  }, [role, isCapturing, captureFrames, sendForPrediction])
+
+  const stopSignCapture = useCallback(() => {
+    setIsCapturing(false)
+    if (captureIntervalRef.current) {
+      clearInterval(captureIntervalRef.current)
+      captureIntervalRef.current = null
+    }
+  }, [])
+
   useEffect(() => {
     if (!roomId) return
 
@@ -174,11 +311,12 @@ export default function Room() {
       channelRef.current = pusherRef.current.subscribe(`private-room-${roomId}`)
 
       channelRef.current.bind('pusher:subscription_succeeded', () => {
-        triggerEvent('user-joined', {})
+        triggerEvent('user-joined', { role })
       })
 
       channelRef.current.bind('user-joined', (data) => {
         if (data.senderId !== userIdRef.current) {
+          setPeerRole(data.role)
           startCall()
         }
       })
@@ -193,6 +331,20 @@ export default function Room() {
 
       channelRef.current.bind('ice-candidate', (data) => {
         handleIceCandidate(data.candidate, data.senderId)
+      })
+
+      // Handle sign language translations from deaf user
+      channelRef.current.bind('sign-translation', (data) => {
+        if (data.senderId !== userIdRef.current) {
+          setCurrentSign(data.gloss)
+          setSignConfidence(data.probability)
+          setTranscript(prev => {
+            if (prev[prev.length - 1] !== data.gloss) {
+              return [...prev, data.gloss]
+            }
+            return prev
+          })
+        }
       })
     }
 
@@ -212,8 +364,11 @@ export default function Room() {
       if (pusherRef.current) {
         pusherRef.current.disconnect()
       }
+      if (captureIntervalRef.current) {
+        clearInterval(captureIntervalRef.current)
+      }
     }
-  }, [roomId, handleOffer, handleAnswer, handleIceCandidate, startCall, triggerEvent])
+  }, [roomId, role, handleOffer, handleAnswer, handleIceCandidate, startCall, triggerEvent])
 
   const toggleMute = () => {
     if (localStreamRef.current) {
@@ -249,8 +404,11 @@ export default function Room() {
   return (
     <>
       <Head>
-        <title>Room {roomId} | Video Call</title>
+        <title>Room {roomId} | SignBridge</title>
       </Head>
+
+      {/* Hidden canvas for frame capture */}
+      <canvas ref={canvasRef} className="hidden" />
 
       <main className="min-h-screen bg-slate-900 flex flex-col">
         {/* Header */}
@@ -258,15 +416,19 @@ export default function Room() {
           <div className="max-w-7xl mx-auto flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 bg-gradient-to-br from-purple-500 to-pink-500 rounded-xl flex items-center justify-center">
-                <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                </svg>
+                <span className="text-xl">🤟</span>
               </div>
               <div>
-                <h1 className="text-white font-semibold">Room: {roomId}</h1>
-                <p className={`text-sm ${isConnected ? 'text-green-400' : 'text-yellow-400'}`}>
-                  {connectionStatus}
-                </p>
+                <h1 className="text-white font-semibold">SignBridge - Room: {roomId}</h1>
+                <div className="flex items-center gap-2">
+                  <p className={`text-sm ${isConnected ? 'text-green-400' : 'text-yellow-400'}`}>
+                    {connectionStatus}
+                  </p>
+                  <span className="text-slate-500">•</span>
+                  <span className="text-sm text-purple-400">
+                    {role === 'deaf' ? '🤟 Deaf' : '👂 Hearing'}
+                  </span>
+                </div>
               </div>
             </div>
             <button
@@ -283,7 +445,7 @@ export default function Room() {
 
         {/* Video Grid */}
         <div className="flex-1 p-4 md:p-6">
-          <div className="max-w-7xl mx-auto h-full grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
+          <div className="max-w-7xl mx-auto h-full grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6">
             {/* Local Video */}
             <div className="relative bg-slate-800 rounded-2xl overflow-hidden aspect-video">
               <video
@@ -303,8 +465,16 @@ export default function Room() {
                 </div>
               )}
               <div className="absolute bottom-4 left-4 bg-black/50 backdrop-blur px-3 py-1.5 rounded-lg">
-                <span className="text-white text-sm font-medium">You</span>
+                <span className="text-white text-sm font-medium">
+                  You {role === 'deaf' ? '🤟' : '👂'}
+                </span>
               </div>
+              {/* Sign capture status for deaf users */}
+              {role === 'deaf' && isCapturing && (
+                <div className="absolute top-4 right-4 bg-green-500/80 backdrop-blur px-3 py-1.5 rounded-lg animate-pulse">
+                  <span className="text-white text-sm font-medium">● Recording signs...</span>
+                </div>
+              )}
             </div>
 
             {/* Remote Video */}
@@ -330,8 +500,59 @@ export default function Room() {
               )}
               {isConnected && (
                 <div className="absolute bottom-4 left-4 bg-black/50 backdrop-blur px-3 py-1.5 rounded-lg">
-                  <span className="text-white text-sm font-medium">Peer</span>
+                  <span className="text-white text-sm font-medium">
+                    Peer {peerRole === 'deaf' ? '🤟' : '👂'}
+                  </span>
                 </div>
+              )}
+            </div>
+
+            {/* Translation Panel */}
+            <div className="bg-slate-800 rounded-2xl p-4 flex flex-col">
+              <h3 className="text-white font-semibold mb-3 flex items-center gap-2">
+                <span>🔤</span> Sign Translation
+              </h3>
+              
+              {/* Current Sign */}
+              <div className="bg-slate-700/50 rounded-xl p-4 mb-4">
+                <p className="text-slate-400 text-xs uppercase tracking-wide mb-1">Current Sign</p>
+                {currentSign ? (
+                  <div>
+                    <p className="text-3xl font-bold text-white">{currentSign}</p>
+                    <p className="text-green-400 text-sm mt-1">
+                      {(signConfidence * 100).toFixed(0)}% confidence
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-slate-500 text-lg">Waiting for signs...</p>
+                )}
+                {signStatus === 'processing' && (
+                  <p className="text-yellow-400 text-sm mt-2 animate-pulse">Processing...</p>
+                )}
+              </div>
+
+              {/* Transcript */}
+              <div className="flex-1 bg-slate-700/50 rounded-xl p-4 overflow-hidden">
+                <p className="text-slate-400 text-xs uppercase tracking-wide mb-2">Transcript</p>
+                <div className="h-32 overflow-y-auto">
+                  {transcript.length > 0 ? (
+                    <p className="text-white leading-relaxed">
+                      {transcript.join(' ')}
+                    </p>
+                  ) : (
+                    <p className="text-slate-500">Signs will appear here...</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Clear transcript button */}
+              {transcript.length > 0 && (
+                <button
+                  onClick={() => setTranscript([])}
+                  className="mt-3 text-slate-400 hover:text-white text-sm transition-colors"
+                >
+                  Clear transcript
+                </button>
               )}
             </div>
           </div>
@@ -340,6 +561,19 @@ export default function Room() {
         {/* Controls */}
         <div className="bg-slate-800/50 backdrop-blur border-t border-white/10 px-4 py-4">
           <div className="max-w-7xl mx-auto flex items-center justify-center gap-4">
+            {/* Sign capture button for deaf users */}
+            {role === 'deaf' && (
+              <button
+                onClick={isCapturing ? stopSignCapture : startSignCapture}
+                className={`w-14 h-14 rounded-full flex items-center justify-center transition-all ${
+                  isCapturing ? 'bg-green-500 hover:bg-green-600 animate-pulse' : 'bg-purple-600 hover:bg-purple-700'
+                }`}
+                title={isCapturing ? 'Stop signing' : 'Start signing'}
+              >
+                <span className="text-2xl">🤟</span>
+              </button>
+            )}
+
             <button
               onClick={toggleMute}
               className={`w-14 h-14 rounded-full flex items-center justify-center transition-all ${

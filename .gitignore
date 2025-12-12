@@ -1,5 +1,8 @@
 # dependencies
 /node_modules
+
+# CV model files (too large for GitHub, runs on HuggingFace)
+/CV/
 /.pnp
 .pnp.js
 

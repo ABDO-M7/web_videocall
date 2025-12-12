@@ -1,6 +1,6 @@
-# Video Call App
+# SignBridge - Sign Language Video Call
 
-A peer-to-peer video calling application built with Next.js, WebRTC, Pusher, and Metered TURN servers. Works across different networks.
+A video calling application with **real-time sign language recognition**. Enables communication between deaf/hard-of-hearing users and hearing users by translating sign language to text.
 
 ## Live Demo
 
@@ -8,13 +8,12 @@ A peer-to-peer video calling application built with Next.js, WebRTC, Pusher, and
 
 ## Features
 
-- Create or join video call rooms with unique codes
-- Real-time peer-to-peer video/audio streaming
-- Works across different networks (NAT traversal with TURN)
-- Mute/unmute audio
-- Toggle video on/off
-- Copy room link to share
-- Modern, responsive UI with Tailwind CSS
+- **Sign Language Recognition**: Real-time translation of sign language to text using I3D model
+- **Role-based UI**: Choose between Deaf/HoH or Hearing user modes
+- **Live Transcript**: Signs are translated and displayed as text for both users
+- **Video Calling**: Peer-to-peer video/audio streaming with WebRTC
+- **Cross-network Support**: Works across different networks with TURN servers
+- **Modern UI**: Responsive design with Tailwind CSS
 
 ## Setup
 
@@ -67,12 +66,15 @@ Open [http://localhost:3000](http://localhost:3000)
 
 ## How It Works
 
-1. **Create a Room**: Click "Create New Room" to generate a unique room code
-2. **Share the Link**: Copy the room link and send it to the person you want to call
-3. **Connect**: When both users are in the room, the video call starts automatically
+1. **Select Role**: Choose if you're a Deaf/HoH user (sign language) or Hearing user (voice)
+2. **Create a Room**: Click "Create New Room" to generate a unique room code
+3. **Share the Link**: Copy the room link and send it to the person you want to call
+4. **Connect**: When both users are in the room, the video call starts automatically
+5. **Sign & Translate**: Deaf users click the 🤟 button to start signing - translations appear in real-time
 
 ## Architecture
 
+- **Sign Language Model**: I3D-based model hosted on HuggingFace Space for sign recognition
 - **Signaling**: Pusher Channels handles the WebRTC signaling (offer/answer/ICE candidates exchange)
 - **STUN**: Google STUN servers for NAT discovery
 - **TURN**: Metered TURN servers for relay when direct connection fails
@@ -82,7 +84,8 @@ Open [http://localhost:3000](http://localhost:3000)
 
 - **Next.js 14** - React framework
 - **WebRTC** - Peer-to-peer video/audio
-- **Pusher Channels** - Real-time signaling
+- **Pusher Channels** - Real-time signaling & translation sync
+- **HuggingFace Spaces** - Sign language recognition API
 - **Metered** - TURN server for NAT traversal
 - **Tailwind CSS** - Styling
 - **Vercel** - Deployment
@@ -91,3 +94,4 @@ Open [http://localhost:3000](http://localhost:3000)
 
 - Metered free tier: 500MB/month (~100-150 minutes of video calls through TURN)
 - Direct peer-to-peer connections don't count against this limit
+- Sign language recognition requires stable internet for API calls

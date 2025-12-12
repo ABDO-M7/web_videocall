@@ -5,38 +5,72 @@ import Head from 'next/head'
 
 export default function Home() {
   const [roomId, setRoomId] = useState('')
+  const [role, setRole] = useState('deaf') // 'deaf' or 'hearing'
   const router = useRouter()
 
   const createRoom = () => {
     const newRoomId = uuidv4().slice(0, 8)
-    router.push(`/room/${newRoomId}`)
+    router.push(`/room/${newRoomId}?role=${role}`)
   }
 
   const joinRoom = (e) => {
     e.preventDefault()
     if (roomId.trim()) {
-      router.push(`/room/${roomId.trim()}`)
+      router.push(`/room/${roomId.trim()}?role=${role}`)
     }
   }
 
   return (
     <>
       <Head>
-        <title>Video Call App</title>
-        <meta name="description" content="Simple peer-to-peer video calling" />
+        <title>SignBridge - Sign Language Video Call</title>
+        <meta name="description" content="Video calling with real-time sign language translation" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
       </Head>
 
       <main className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center p-4">
         <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-8 md:p-12 max-w-md w-full shadow-2xl border border-white/20">
-          <div className="text-center mb-10">
+          <div className="text-center mb-8">
             <div className="w-20 h-20 bg-gradient-to-br from-purple-500 to-pink-500 rounded-2xl mx-auto mb-6 flex items-center justify-center shadow-lg">
               <svg className="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
               </svg>
             </div>
-            <h1 className="text-3xl font-bold text-white mb-2">Video Call</h1>
-            <p className="text-gray-300">Connect face-to-face instantly</p>
+            <h1 className="text-3xl font-bold text-white mb-2">SignBridge</h1>
+            <p className="text-gray-300">Video calls with sign language translation</p>
+          </div>
+
+          {/* Role Selection */}
+          <div className="mb-6">
+            <label className="block text-gray-300 text-sm font-medium mb-3">I am:</label>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => setRole('deaf')}
+                className={`p-4 rounded-xl border-2 transition-all ${
+                  role === 'deaf'
+                    ? 'border-purple-500 bg-purple-500/20 text-white'
+                    : 'border-white/20 bg-white/5 text-gray-400 hover:bg-white/10'
+                }`}
+              >
+                <div className="text-2xl mb-1">🤟</div>
+                <div className="font-medium">Deaf / HoH</div>
+                <div className="text-xs opacity-70">Sign language user</div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setRole('hearing')}
+                className={`p-4 rounded-xl border-2 transition-all ${
+                  role === 'hearing'
+                    ? 'border-purple-500 bg-purple-500/20 text-white'
+                    : 'border-white/20 bg-white/5 text-gray-400 hover:bg-white/10'
+                }`}
+              >
+                <div className="text-2xl mb-1">👂</div>
+                <div className="font-medium">Hearing</div>
+                <div className="text-xs opacity-70">Voice user</div>
+              </button>
+            </div>
           </div>
 
           <button
@@ -71,6 +105,10 @@ export default function Home() {
               Join Room
             </button>
           </form>
+
+          <p className="text-center text-gray-500 text-xs mt-6">
+            Deaf users&apos; signs are translated to text in real-time
+          </p>
         </div>
       </main>
     </>
