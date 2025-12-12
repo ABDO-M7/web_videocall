@@ -67,6 +67,7 @@ export default function Room() {
   const [speechText, setSpeechText] = useState('')
   const [speechTranscript, setSpeechTranscript] = useState([])
   const recognitionRef = useRef(null)
+  const isListeningRef = useRef(false)
 
   const localVideoRef = useRef(null)
   const remoteVideoRef = useRef(null)
@@ -377,14 +378,20 @@ export default function Room() {
       return
     }
     
+    // Stop any existing recognition
+    if (recognitionRef.current) {
+      recognitionRef.current.stop()
+    }
+    
     const recognition = new SpeechRecognition()
     recognition.continuous = true
     recognition.interimResults = true
     recognition.lang = 'en-US'
     
     recognition.onstart = () => {
-      setIsListening(true)
       console.log('Speech recognition started')
+      isListeningRef.current = true
+      setIsListening(true)
     }
     
     recognition.onresult = (event) => {
@@ -392,53 +399,76 @@ export default function Room() {
       let finalTranscript = ''
       
       for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = event.results[i][0].transcript
+        const text = event.results[i][0].transcript
         if (event.results[i].isFinal) {
-          finalTranscript += transcript
+          finalTranscript += text
         } else {
-          interimTranscript += transcript
+          interimTranscript += text
         }
       }
+      
+      console.log('Speech result:', { interim: interimTranscript, final: finalTranscript })
       
       // Show interim results
       setSpeechText(interimTranscript || finalTranscript)
       
       // When we have final results, add to transcript and send to peer
       if (finalTranscript) {
-        setSpeechTranscript(prev => [...prev, finalTranscript.trim()])
-        setSpeechText('')
-        
-        // Send to deaf peer
-        triggerEvent('speech-text', { text: finalTranscript.trim() })
+        const trimmed = finalTranscript.trim()
+        if (trimmed) {
+          setSpeechTranscript(prev => [...prev, trimmed])
+          setSpeechText('')
+          // Send to deaf peer
+          triggerEvent('speech-text', { text: trimmed })
+        }
       }
     }
     
     recognition.onerror = (event) => {
       console.error('Speech recognition error:', event.error)
-      if (event.error !== 'no-speech') {
+      // Don't stop on no-speech or aborted errors
+      if (event.error !== 'no-speech' && event.error !== 'aborted') {
+        isListeningRef.current = false
         setIsListening(false)
       }
     }
     
     recognition.onend = () => {
-      // Restart if still listening
-      if (isListening && recognitionRef.current) {
-        recognition.start()
+      console.log('Speech recognition ended, isListening:', isListeningRef.current)
+      // Restart if still supposed to be listening
+      if (isListeningRef.current) {
+        try {
+          recognition.start()
+        } catch (e) {
+          console.error('Failed to restart recognition:', e)
+        }
       } else {
         setIsListening(false)
       }
     }
     
     recognitionRef.current = recognition
-    recognition.start()
-  }, [role, isListening, triggerEvent])
+    
+    try {
+      recognition.start()
+    } catch (e) {
+      console.error('Failed to start recognition:', e)
+      alert('Failed to start speech recognition. Make sure microphone is allowed.')
+    }
+  }, [role, triggerEvent])
 
   const stopSpeechRecognition = useCallback(() => {
+    console.log('Stopping speech recognition')
+    isListeningRef.current = false
+    setIsListening(false)
     if (recognitionRef.current) {
-      recognitionRef.current.stop()
+      try {
+        recognitionRef.current.stop()
+      } catch (e) {
+        console.error('Error stopping recognition:', e)
+      }
       recognitionRef.current = null
     }
-    setIsListening(false)
   }, [])
 
   // Motion-based sign language capture (like Python script exactly)
