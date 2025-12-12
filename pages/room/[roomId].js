@@ -435,13 +435,21 @@ export default function Room() {
     
     recognition.onend = () => {
       console.log('Speech recognition ended, isListening:', isListeningRef.current)
-      // Restart if still supposed to be listening
+      // Restart if still supposed to be listening (with small delay for stability)
       if (isListeningRef.current) {
-        try {
-          recognition.start()
-        } catch (e) {
-          console.error('Failed to restart recognition:', e)
-        }
+        setTimeout(() => {
+          if (isListeningRef.current && recognitionRef.current) {
+            try {
+              recognitionRef.current.start()
+              console.log('Speech recognition restarted')
+            } catch (e) {
+              console.error('Failed to restart recognition:', e)
+              // If restart fails, try creating new instance
+              isListeningRef.current = false
+              setIsListening(false)
+            }
+          }
+        }, 100)
       } else {
         setIsListening(false)
       }
