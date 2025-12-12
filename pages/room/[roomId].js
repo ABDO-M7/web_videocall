@@ -31,10 +31,12 @@ const ICE_SERVERS = {
   iceCandidatePoolSize: 10,
 }
 
-// Sign language recognition config
+// Sign language recognition config (matching Python script)
 const CLIP_FRAMES = 32
 const MIN_CONFIDENCE = 0.6
-const CAPTURE_INTERVAL = 2000 // ms between captures
+const MIN_MOTION_SCORE = 2.3  // Motion threshold to START capturing
+const LOW_MOTION_FRAMES = 3   // Frames of low motion to STOP capturing
+const MAX_CAPTURE_SECONDS = 2.0 // Max capture duration
 
 export default function Room() {
   const router = useRouter()
@@ -51,8 +53,10 @@ export default function Room() {
   const [signConfidence, setSignConfidence] = useState(0)
   const [transcript, setTranscript] = useState([])
   const [isCapturing, setIsCapturing] = useState(false)
-  const [signStatus, setSignStatus] = useState('idle') // idle, capturing, processing
+  const [signStatus, setSignStatus] = useState('idle') // idle, ready, capturing, processing
   const [peerRole, setPeerRole] = useState(null)
+  const [motionScore, setMotionScore] = useState(0)
+  const [autoCapture, setAutoCapture] = useState(true) // Auto-detect motion
 
   const localVideoRef = useRef(null)
   const remoteVideoRef = useRef(null)
@@ -62,9 +66,13 @@ export default function Room() {
   const channelRef = useRef(null)
   const userIdRef = useRef(null)
   const canvasRef = useRef(null)
+  const motionCanvasRef = useRef(null)
   const frameBufferRef = useRef([])
   const captureIntervalRef = useRef(null)
-  const mediaRecorderRef = useRef(null)
+  const prevGrayRef = useRef(null)
+  const lowMotionCountRef = useRef(0)
+  const captureStartTimeRef = useRef(0)
+  const isProcessingRef = useRef(false)
 
   const triggerEvent = useCallback(async (event, data) => {
     try {
@@ -160,8 +168,45 @@ export default function Room() {
     triggerEvent('offer', { offer })
   }, [createPeerConnection, triggerEvent])
 
-  // Capture frames from video for sign language recognition
-  const captureFrames = useCallback(() => {
+  // Compute motion score between current frame and previous (like Python script)
+  const computeMotionScore = useCallback(() => {
+    if (!localVideoRef.current || !motionCanvasRef.current) return 0
+    
+    const video = localVideoRef.current
+    const canvas = motionCanvasRef.current
+    const ctx = canvas.getContext('2d')
+    
+    // Downscale to 64x64 for motion detection (like Python)
+    canvas.width = 64
+    canvas.height = 64
+    ctx.drawImage(video, 0, 0, 64, 64)
+    
+    const imageData = ctx.getImageData(0, 0, 64, 64)
+    const data = imageData.data
+    
+    // Convert to grayscale
+    const gray = new Uint8Array(64 * 64)
+    for (let i = 0; i < gray.length; i++) {
+      const idx = i * 4
+      gray[i] = Math.round(0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2])
+    }
+    
+    // Compute motion as mean absolute difference
+    let motion = 0
+    if (prevGrayRef.current) {
+      let sum = 0
+      for (let i = 0; i < gray.length; i++) {
+        sum += Math.abs(gray[i] - prevGrayRef.current[i])
+      }
+      motion = sum / gray.length
+    }
+    
+    prevGrayRef.current = gray
+    return motion
+  }, [])
+
+  // Capture frame for sign language recognition
+  const captureFrame = useCallback(() => {
     if (!localVideoRef.current || !canvasRef.current) return null
     
     const video = localVideoRef.current
@@ -251,33 +296,85 @@ export default function Room() {
     }
   }, [triggerEvent])
 
-  // Start/stop sign language capture for deaf users
-  const startSignCapture = useCallback(() => {
-    if (role !== 'deaf' || isCapturing) return
+  // Motion-based sign language capture (like Python script)
+  const startMotionDetection = useCallback(() => {
+    if (role !== 'deaf' || captureIntervalRef.current) return
     
-    setIsCapturing(true)
-    frameBufferRef.current = []
+    setSignStatus('ready')
     
     captureIntervalRef.current = setInterval(() => {
-      const frame = captureFrames()
-      if (frame) {
-        frameBufferRef.current.push(frame)
-        
-        if (frameBufferRef.current.length >= CLIP_FRAMES) {
-          const frames = [...frameBufferRef.current]
+      const motion = computeMotionScore()
+      setMotionScore(motion)
+      
+      const now = Date.now()
+      
+      // State machine like Python script
+      if (!isCapturing && !isProcessingRef.current) {
+        // READY state - waiting for motion to start
+        if (motion >= MIN_MOTION_SCORE) {
+          // Motion detected! Start capturing
+          setIsCapturing(true)
+          setSignStatus('capturing')
           frameBufferRef.current = []
-          sendForPrediction(frames)
+          lowMotionCountRef.current = 0
+          captureStartTimeRef.current = now
         }
       }
-    }, 100) // Capture at ~10fps, will interpolate
-  }, [role, isCapturing, captureFrames, sendForPrediction])
+      
+      if (isCapturing) {
+        // CAPTURING state - record frames
+        const frame = captureFrame()
+        if (frame) {
+          frameBufferRef.current.push(frame)
+          
+          // Keep only last CLIP_FRAMES
+          if (frameBufferRef.current.length > CLIP_FRAMES) {
+            frameBufferRef.current.shift()
+          }
+        }
+        
+        // Track low motion to detect end of sign
+        if (motion < MIN_MOTION_SCORE) {
+          lowMotionCountRef.current++
+        } else {
+          lowMotionCountRef.current = 0
+        }
+        
+        // Check if should finish capturing
+        const enoughFrames = frameBufferRef.current.length >= CLIP_FRAMES
+        const stableEnough = lowMotionCountRef.current >= LOW_MOTION_FRAMES
+        const timeLong = (now - captureStartTimeRef.current) >= MAX_CAPTURE_SECONDS * 1000
+        
+        if ((enoughFrames && stableEnough) || timeLong) {
+          // Finish capturing and send for prediction
+          if (frameBufferRef.current.length > 10) {
+            const frames = [...frameBufferRef.current]
+            frameBufferRef.current = []
+            setIsCapturing(false)
+            isProcessingRef.current = true
+            sendForPrediction(frames).finally(() => {
+              isProcessingRef.current = false
+              setSignStatus('ready')
+            })
+          } else {
+            setIsCapturing(false)
+            setSignStatus('ready')
+          }
+          lowMotionCountRef.current = 0
+        }
+      }
+    }, 100) // ~10fps motion detection
+  }, [role, isCapturing, computeMotionScore, captureFrame, sendForPrediction])
 
-  const stopSignCapture = useCallback(() => {
+  const stopMotionDetection = useCallback(() => {
     setIsCapturing(false)
+    setSignStatus('idle')
     if (captureIntervalRef.current) {
       clearInterval(captureIntervalRef.current)
       captureIntervalRef.current = null
     }
+    frameBufferRef.current = []
+    prevGrayRef.current = null
   }, [])
 
   useEffect(() => {
@@ -407,8 +504,9 @@ export default function Room() {
         <title>Room {roomId} | SignBridge</title>
       </Head>
 
-      {/* Hidden canvas for frame capture */}
+      {/* Hidden canvases for frame capture and motion detection */}
       <canvas ref={canvasRef} className="hidden" />
+      <canvas ref={motionCanvasRef} className="hidden" />
 
       <main className="min-h-screen bg-slate-900 flex flex-col">
         {/* Header */}
@@ -470,9 +568,23 @@ export default function Room() {
                 </span>
               </div>
               {/* Sign capture status for deaf users */}
-              {role === 'deaf' && isCapturing && (
-                <div className="absolute top-4 right-4 bg-green-500/80 backdrop-blur px-3 py-1.5 rounded-lg animate-pulse">
-                  <span className="text-white text-sm font-medium">● Recording signs...</span>
+              {role === 'deaf' && signStatus !== 'idle' && (
+                <div className={`absolute top-4 right-4 backdrop-blur px-3 py-1.5 rounded-lg ${
+                  signStatus === 'capturing' ? 'bg-red-500/80 animate-pulse' :
+                  signStatus === 'processing' ? 'bg-yellow-500/80' :
+                  'bg-green-500/80'
+                }`}>
+                  <span className="text-white text-sm font-medium">
+                    {signStatus === 'capturing' ? '● Recording...' :
+                     signStatus === 'processing' ? '⏳ Processing...' :
+                     '✓ Ready - perform sign'}
+                  </span>
+                </div>
+              )}
+              {/* Motion indicator */}
+              {role === 'deaf' && signStatus !== 'idle' && (
+                <div className="absolute top-4 left-4 bg-black/50 backdrop-blur px-2 py-1 rounded text-xs text-white">
+                  Motion: {motionScore.toFixed(1)}
                 </div>
               )}
             </div>
@@ -513,6 +625,30 @@ export default function Room() {
                 <span>🔤</span> Sign Translation
               </h3>
               
+              {/* Status */}
+              <div className={`rounded-xl p-3 mb-3 ${
+                signStatus === 'idle' ? 'bg-slate-700/50' :
+                signStatus === 'ready' ? 'bg-green-900/30 border border-green-500/30' :
+                signStatus === 'capturing' ? 'bg-red-900/30 border border-red-500/30' :
+                'bg-yellow-900/30 border border-yellow-500/30'
+              }`}>
+                <p className="text-xs uppercase tracking-wide mb-1 text-slate-400">Status</p>
+                <p className={`font-medium ${
+                  signStatus === 'idle' ? 'text-slate-400' :
+                  signStatus === 'ready' ? 'text-green-400' :
+                  signStatus === 'capturing' ? 'text-red-400' :
+                  'text-yellow-400'
+                }`}>
+                  {signStatus === 'idle' ? '⏸ Click 🤟 to start' :
+                   signStatus === 'ready' ? '✓ Ready - perform sign' :
+                   signStatus === 'capturing' ? '● Recording sign...' :
+                   '⏳ Processing...'}
+                </p>
+                {signStatus !== 'idle' && (
+                  <p className="text-slate-500 text-xs mt-1">Motion: {motionScore.toFixed(1)}</p>
+                )}
+              </div>
+
               {/* Current Sign */}
               <div className="bg-slate-700/50 rounded-xl p-4 mb-4">
                 <p className="text-slate-400 text-xs uppercase tracking-wide mb-1">Current Sign</p>
@@ -525,9 +661,6 @@ export default function Room() {
                   </div>
                 ) : (
                   <p className="text-slate-500 text-lg">Waiting for signs...</p>
-                )}
-                {signStatus === 'processing' && (
-                  <p className="text-yellow-400 text-sm mt-2 animate-pulse">Processing...</p>
                 )}
               </div>
 
@@ -561,14 +694,16 @@ export default function Room() {
         {/* Controls */}
         <div className="bg-slate-800/50 backdrop-blur border-t border-white/10 px-4 py-4">
           <div className="max-w-7xl mx-auto flex items-center justify-center gap-4">
-            {/* Sign capture button for deaf users */}
+            {/* Sign detection toggle for deaf users */}
             {role === 'deaf' && (
               <button
-                onClick={isCapturing ? stopSignCapture : startSignCapture}
+                onClick={signStatus === 'idle' ? startMotionDetection : stopMotionDetection}
                 className={`w-14 h-14 rounded-full flex items-center justify-center transition-all ${
-                  isCapturing ? 'bg-green-500 hover:bg-green-600 animate-pulse' : 'bg-purple-600 hover:bg-purple-700'
+                  signStatus === 'idle' ? 'bg-purple-600 hover:bg-purple-700' :
+                  signStatus === 'capturing' ? 'bg-red-500 hover:bg-red-600 animate-pulse' :
+                  'bg-green-500 hover:bg-green-600'
                 }`}
-                title={isCapturing ? 'Stop signing' : 'Start signing'}
+                title={signStatus === 'idle' ? 'Start sign detection' : 'Stop sign detection'}
               >
                 <span className="text-2xl">🤟</span>
               </button>
