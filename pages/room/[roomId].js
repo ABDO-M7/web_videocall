@@ -53,12 +53,14 @@ export default function Room() {
   const [currentSign, setCurrentSign] = useState(null)
   const [signConfidence, setSignConfidence] = useState(0)
   const [transcript, setTranscript] = useState([])
+  const [refinedSentence, setRefinedSentence] = useState('')
   const [isCapturing, setIsCapturing] = useState(false)
   const [signStatus, setSignStatus] = useState('idle') // idle, ready, capturing, processing
   const [peerRole, setPeerRole] = useState(null)
   const [motionScore, setMotionScore] = useState(0)
   const [captureFrameCount, setCaptureFrameCount] = useState(0)
   const [cooldownTime, setCooldownTime] = useState(0)
+  const [isRefining, setIsRefining] = useState(false)
 
   const localVideoRef = useRef(null)
   const remoteVideoRef = useRef(null)
@@ -333,6 +335,31 @@ export default function Room() {
     }
   }, [triggerEvent])
 
+  // Refine transcript into proper sentence using LLM
+  const refineTranscript = useCallback(async () => {
+    if (transcript.length < 2 || isRefining) return
+    
+    setIsRefining(true)
+    try {
+      const response = await fetch('/api/sign/refine', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ glosses: transcript })
+      })
+      
+      const result = await response.json()
+      if (result.refined) {
+        setRefinedSentence(result.refined)
+        // Send refined sentence to peer
+        triggerEvent('refined-sentence', { sentence: result.refined })
+      }
+    } catch (error) {
+      console.error('Refine error:', error)
+    } finally {
+      setIsRefining(false)
+    }
+  }, [transcript, isRefining, triggerEvent])
+
   // Motion-based sign language capture (like Python script exactly)
   const startMotionDetection = useCallback(() => {
     if (role !== 'deaf' || captureIntervalRef.current) return
@@ -502,6 +529,13 @@ export default function Room() {
             }
             return prev
           })
+        }
+      })
+
+      // Handle refined sentences from deaf user
+      channelRef.current.bind('refined-sentence', (data) => {
+        if (data.senderId !== userIdRef.current) {
+          setRefinedSentence(data.sentence)
         }
       })
     }
@@ -730,10 +764,18 @@ export default function Room() {
                 )}
               </div>
 
+              {/* Refined Sentence */}
+              {refinedSentence && (
+                <div className="bg-green-900/30 border border-green-500/30 rounded-xl p-4 mb-3">
+                  <p className="text-green-400 text-xs uppercase tracking-wide mb-1">✨ Refined Sentence</p>
+                  <p className="text-white text-lg font-medium">{refinedSentence}</p>
+                </div>
+              )}
+
               {/* Transcript */}
               <div className="flex-1 bg-slate-700/50 rounded-xl p-4 overflow-hidden">
-                <p className="text-slate-400 text-xs uppercase tracking-wide mb-2">Transcript</p>
-                <div className="h-32 overflow-y-auto">
+                <p className="text-slate-400 text-xs uppercase tracking-wide mb-2">Raw Glosses</p>
+                <div className="h-24 overflow-y-auto">
                   {transcript.length > 0 ? (
                     <p className="text-white leading-relaxed">
                       {transcript.join(' ')}
@@ -744,14 +786,23 @@ export default function Room() {
                 </div>
               </div>
 
-              {/* Clear transcript button */}
-              {transcript.length > 0 && (
-                <button
-                  onClick={() => setTranscript([])}
-                  className="mt-3 text-slate-400 hover:text-white text-sm transition-colors"
-                >
-                  Clear transcript
-                </button>
+              {/* Action buttons */}
+              {transcript.length >= 2 && (
+                <div className="mt-3 flex gap-2">
+                  <button
+                    onClick={refineTranscript}
+                    disabled={isRefining}
+                    className="flex-1 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 disabled:cursor-wait text-white text-sm py-2 px-3 rounded-lg transition-colors"
+                  >
+                    {isRefining ? '✨ Refining...' : '✨ Make Sentence'}
+                  </button>
+                  <button
+                    onClick={() => { setTranscript([]); setRefinedSentence('') }}
+                    className="text-slate-400 hover:text-white text-sm py-2 px-3 transition-colors"
+                  >
+                    Clear
+                  </button>
+                </div>
               )}
             </div>
           </div>
