@@ -33,7 +33,7 @@ const ICE_SERVERS = {
 
 // Sign language recognition config (matching Python script)
 const CLIP_FRAMES = 32
-const MIN_CONFIDENCE = 0.6
+const MIN_CONFIDENCE = 0.3  // Lowered to show more predictions (was 0.6)
 const MIN_MOTION_SCORE = 2.3  // Motion threshold to START capturing
 const LOW_MOTION_FRAMES = 3   // Frames of low motion to STOP capturing
 const MAX_CAPTURE_SECONDS = 3.5 // Max capture duration (32 frames at 10fps = 3.2s)
@@ -304,20 +304,27 @@ export default function Room() {
       const result = await response.json()
       console.log('Prediction result:', result)
       
-      if (response.ok && result.gloss && result.probability >= MIN_CONFIDENCE) {
+      if (response.ok && result.gloss) {
+        console.log('Sign detected:', result.gloss, 'prob:', result.probability, 'topk:', result.topk)
+        
+        // Always show the current prediction
         setCurrentSign(result.gloss)
         setSignConfidence(result.probability)
-        setTranscript(prev => {
-          if (prev[prev.length - 1] !== result.gloss) {
-            return [...prev, result.gloss]
-          }
-          return prev
-        })
-        // Send translation to peer
-        triggerEvent('sign-translation', { 
-          gloss: result.gloss, 
-          probability: result.probability 
-        })
+        
+        // Only add to transcript if confidence is high enough
+        if (result.probability >= MIN_CONFIDENCE) {
+          setTranscript(prev => {
+            if (prev[prev.length - 1] !== result.gloss) {
+              return [...prev, result.gloss]
+            }
+            return prev
+          })
+          // Send translation to peer
+          triggerEvent('sign-translation', { 
+            gloss: result.gloss, 
+            probability: result.probability 
+          })
+        }
       } else if (result.error || result.detail) {
         console.error('API error:', result.error || result.detail)
       }
