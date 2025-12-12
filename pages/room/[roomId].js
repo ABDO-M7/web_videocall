@@ -61,6 +61,12 @@ export default function Room() {
   const [captureFrameCount, setCaptureFrameCount] = useState(0)
   const [cooldownTime, setCooldownTime] = useState(0)
   const [isRefining, setIsRefining] = useState(false)
+  
+  // Speech-to-text states (for hearing users)
+  const [isListening, setIsListening] = useState(false)
+  const [speechText, setSpeechText] = useState('')
+  const [speechTranscript, setSpeechTranscript] = useState([])
+  const recognitionRef = useRef(null)
 
   const localVideoRef = useRef(null)
   const remoteVideoRef = useRef(null)
@@ -360,6 +366,81 @@ export default function Room() {
     }
   }, [transcript, isRefining, triggerEvent])
 
+  // Speech-to-text for hearing users
+  const startSpeechRecognition = useCallback(() => {
+    if (role !== 'hearing') return
+    
+    // Check browser support
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!SpeechRecognition) {
+      alert('Speech recognition is not supported in this browser. Please use Chrome.')
+      return
+    }
+    
+    const recognition = new SpeechRecognition()
+    recognition.continuous = true
+    recognition.interimResults = true
+    recognition.lang = 'en-US'
+    
+    recognition.onstart = () => {
+      setIsListening(true)
+      console.log('Speech recognition started')
+    }
+    
+    recognition.onresult = (event) => {
+      let interimTranscript = ''
+      let finalTranscript = ''
+      
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript
+        if (event.results[i].isFinal) {
+          finalTranscript += transcript
+        } else {
+          interimTranscript += transcript
+        }
+      }
+      
+      // Show interim results
+      setSpeechText(interimTranscript || finalTranscript)
+      
+      // When we have final results, add to transcript and send to peer
+      if (finalTranscript) {
+        setSpeechTranscript(prev => [...prev, finalTranscript.trim()])
+        setSpeechText('')
+        
+        // Send to deaf peer
+        triggerEvent('speech-text', { text: finalTranscript.trim() })
+      }
+    }
+    
+    recognition.onerror = (event) => {
+      console.error('Speech recognition error:', event.error)
+      if (event.error !== 'no-speech') {
+        setIsListening(false)
+      }
+    }
+    
+    recognition.onend = () => {
+      // Restart if still listening
+      if (isListening && recognitionRef.current) {
+        recognition.start()
+      } else {
+        setIsListening(false)
+      }
+    }
+    
+    recognitionRef.current = recognition
+    recognition.start()
+  }, [role, isListening, triggerEvent])
+
+  const stopSpeechRecognition = useCallback(() => {
+    if (recognitionRef.current) {
+      recognitionRef.current.stop()
+      recognitionRef.current = null
+    }
+    setIsListening(false)
+  }, [])
+
   // Motion-based sign language capture (like Python script exactly)
   const startMotionDetection = useCallback(() => {
     if (role !== 'deaf' || captureIntervalRef.current) return
@@ -538,6 +619,13 @@ export default function Room() {
           setRefinedSentence(data.sentence)
         }
       })
+
+      // Handle speech text from hearing user
+      channelRef.current.bind('speech-text', (data) => {
+        if (data.senderId !== userIdRef.current) {
+          setSpeechTranscript(prev => [...prev, data.text])
+        }
+      })
     }
 
     initMedia().then(initPusher)
@@ -558,6 +646,9 @@ export default function Room() {
       }
       if (captureIntervalRef.current) {
         clearInterval(captureIntervalRef.current)
+      }
+      if (recognitionRef.current) {
+        recognitionRef.current.stop()
       }
     }
   }, [roomId, role, handleOffer, handleAnswer, handleIceCandidate, startCall, triggerEvent])
@@ -714,6 +805,47 @@ export default function Room() {
               )}
             </div>
 
+            {/* Speech Panel (for deaf users to read what hearing user says) */}
+            {(role === 'deaf' || peerRole === 'hearing') && (
+              <div className="bg-slate-800 rounded-2xl p-4 flex flex-col mb-4">
+                <h3 className="text-white font-semibold mb-3 flex items-center gap-2">
+                  <span>🎤</span> Speech to Text
+                  {isListening && <span className="text-xs text-red-400 animate-pulse">● LIVE</span>}
+                </h3>
+                
+                {/* Current speech (interim) */}
+                {speechText && (
+                  <div className="bg-blue-900/30 border border-blue-500/30 rounded-xl p-3 mb-3">
+                    <p className="text-blue-300 italic">{speechText}...</p>
+                  </div>
+                )}
+                
+                {/* Speech transcript */}
+                <div className="flex-1 bg-slate-700/50 rounded-xl p-4 overflow-hidden">
+                  <div className="h-24 overflow-y-auto">
+                    {speechTranscript.length > 0 ? (
+                      <p className="text-white leading-relaxed">
+                        {speechTranscript.join(' ')}
+                      </p>
+                    ) : (
+                      <p className="text-slate-500">
+                        {role === 'hearing' ? 'Click 🎤 to start speaking...' : 'Waiting for hearing user to speak...'}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                
+                {speechTranscript.length > 0 && (
+                  <button
+                    onClick={() => setSpeechTranscript([])}
+                    className="mt-2 text-slate-400 hover:text-white text-sm transition-colors"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            )}
+
             {/* Translation Panel */}
             <div className="bg-slate-800 rounded-2xl p-4 flex flex-col">
               <h3 className="text-white font-semibold mb-3 flex items-center gap-2">
@@ -823,6 +955,19 @@ export default function Room() {
                 title={signStatus === 'idle' ? 'Start sign detection' : 'Stop sign detection'}
               >
                 <span className="text-2xl">🤟</span>
+              </button>
+            )}
+
+            {/* Speech-to-text toggle for hearing users */}
+            {role === 'hearing' && (
+              <button
+                onClick={isListening ? stopSpeechRecognition : startSpeechRecognition}
+                className={`w-14 h-14 rounded-full flex items-center justify-center transition-all ${
+                  isListening ? 'bg-red-500 hover:bg-red-600 animate-pulse' : 'bg-blue-600 hover:bg-blue-700'
+                }`}
+                title={isListening ? 'Stop speech-to-text' : 'Start speech-to-text'}
+              >
+                <span className="text-2xl">{isListening ? '🎙️' : '🎤'}</span>
               </button>
             )}
 
