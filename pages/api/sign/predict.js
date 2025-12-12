@@ -5,8 +5,9 @@ const SIGN_PREDICT_URL = `${HF_BASE_URL}/sign/predict`
 export const config = {
   api: {
     bodyParser: {
-      sizeLimit: '10mb',
+      sizeLimit: '50mb',
     },
+    responseLimit: false,
   },
 }
 
@@ -33,17 +34,19 @@ export default async function handler(req, res) {
 
     // Convert base64 to buffer
     const videoBuffer = Buffer.from(videoBlob, 'base64')
+    console.log('Video buffer size:', videoBuffer.length)
 
     // Create form data for the HF API
     const FormData = (await import('form-data')).default
     const formData = new FormData()
     formData.append('video', videoBuffer, {
-      filename: 'clip.mp4',
-      contentType: 'video/mp4',
+      filename: 'clip.webm',
+      contentType: 'video/webm',
     })
     formData.append('top_k', String(topK))
 
     // Send to HuggingFace Space
+    console.log('Sending to HF API...')
     const response = await fetch(SIGN_PREDICT_URL, {
       method: 'POST',
       body: formData,
@@ -60,10 +63,11 @@ export default async function handler(req, res) {
     }
 
     const result = await response.json()
+    console.log('HF API result:', result)
     return res.status(200).json(result)
 
   } catch (error) {
     console.error('Sign prediction error:', error)
-    return res.status(500).json({ error: 'Failed to process sign prediction' })
+    return res.status(500).json({ error: 'Failed to process sign prediction', details: error.message })
   }
 }

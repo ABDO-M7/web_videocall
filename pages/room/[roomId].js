@@ -73,6 +73,7 @@ export default function Room() {
   const lowMotionCountRef = useRef(0)
   const captureStartTimeRef = useRef(0)
   const isProcessingRef = useRef(false)
+  const isCapturingRef = useRef(false) // Use ref to avoid closure issues
 
   const triggerEvent = useCallback(async (event, data) => {
     try {
@@ -220,79 +221,105 @@ export default function Room() {
     return canvas.toDataURL('image/jpeg', 0.8)
   }, [])
 
-  // Send video clip for sign prediction
+  // Create video from frames and send for prediction
   const sendForPrediction = useCallback(async (frames) => {
-    if (frames.length < 10) return // Need minimum frames
+    if (frames.length < 10) {
+      console.log('Not enough frames:', frames.length)
+      return
+    }
     
     setSignStatus('processing')
+    console.log('Creating video from', frames.length, 'frames')
     
     try {
-      // Create a video blob from frames
+      // Create video using canvas and MediaRecorder
       const canvas = canvasRef.current
+      if (!canvas) return
+      
       const stream = canvas.captureStream(25)
-      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' })
+      
+      // Check supported mime types
+      const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') 
+        ? 'video/webm;codecs=vp9'
+        : MediaRecorder.isTypeSupported('video/webm')
+          ? 'video/webm'
+          : 'video/mp4'
+      
+      const recorder = new MediaRecorder(stream, { mimeType })
       const chunks = []
       
-      recorder.ondataavailable = (e) => chunks.push(e.data)
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data)
+      }
       
-      await new Promise((resolve) => {
+      // Create video by drawing frames
+      await new Promise((resolve, reject) => {
         recorder.onstop = resolve
+        recorder.onerror = reject
         recorder.start()
         
-        // Draw frames to canvas
         let frameIndex = 0
-        const drawFrame = () => {
+        const ctx = canvas.getContext('2d')
+        
+        const drawNextFrame = () => {
           if (frameIndex < frames.length) {
             const img = new Image()
             img.onload = () => {
-              const ctx = canvas.getContext('2d')
-              ctx.drawImage(img, 0, 0)
+              ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
               frameIndex++
-              setTimeout(drawFrame, 40) // ~25fps
+              setTimeout(drawNextFrame, 40) // ~25fps
+            }
+            img.onerror = () => {
+              frameIndex++
+              setTimeout(drawNextFrame, 40)
             }
             img.src = frames[frameIndex]
           } else {
             recorder.stop()
           }
         }
-        drawFrame()
+        drawNextFrame()
       })
       
-      const blob = new Blob(chunks, { type: 'video/webm' })
+      // Convert to base64
+      const blob = new Blob(chunks, { type: mimeType })
+      console.log('Video blob size:', blob.size)
+      
       const base64 = await new Promise((resolve) => {
         const reader = new FileReader()
         reader.onloadend = () => resolve(reader.result.split(',')[1])
         reader.readAsDataURL(blob)
       })
       
+      // Send to API
       const response = await fetch('/api/sign/predict', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ videoBlob: base64, topK: 5 }),
       })
       
-      if (response.ok) {
-        const result = await response.json()
-        if (result.gloss && result.probability >= MIN_CONFIDENCE) {
-          setCurrentSign(result.gloss)
-          setSignConfidence(result.probability)
-          setTranscript(prev => {
-            if (prev[prev.length - 1] !== result.gloss) {
-              return [...prev, result.gloss]
-            }
-            return prev
-          })
-          // Send translation to peer
-          triggerEvent('sign-translation', { 
-            gloss: result.gloss, 
-            probability: result.probability 
-          })
-        }
+      const result = await response.json()
+      console.log('Prediction result:', result)
+      
+      if (response.ok && result.gloss && result.probability >= MIN_CONFIDENCE) {
+        setCurrentSign(result.gloss)
+        setSignConfidence(result.probability)
+        setTranscript(prev => {
+          if (prev[prev.length - 1] !== result.gloss) {
+            return [...prev, result.gloss]
+          }
+          return prev
+        })
+        // Send translation to peer
+        triggerEvent('sign-translation', { 
+          gloss: result.gloss, 
+          probability: result.probability 
+        })
+      } else if (result.error) {
+        console.error('API error:', result.error, result.details)
       }
     } catch (error) {
       console.error('Sign prediction error:', error)
-    } finally {
-      setSignStatus('idle')
     }
   }, [triggerEvent])
 
@@ -301,6 +328,10 @@ export default function Room() {
     if (role !== 'deaf' || captureIntervalRef.current) return
     
     setSignStatus('ready')
+    isCapturingRef.current = false
+    isProcessingRef.current = false
+    frameBufferRef.current = []
+    prevGrayRef.current = null
     
     captureIntervalRef.current = setInterval(() => {
       const motion = computeMotionScore()
@@ -308,11 +339,13 @@ export default function Room() {
       
       const now = Date.now()
       
-      // State machine like Python script
-      if (!isCapturing && !isProcessingRef.current) {
+      // State machine like Python script (using refs to avoid closure issues)
+      if (!isCapturingRef.current && !isProcessingRef.current) {
         // READY state - waiting for motion to start
         if (motion >= MIN_MOTION_SCORE) {
           // Motion detected! Start capturing
+          console.log('Motion detected! Starting capture. Motion:', motion)
+          isCapturingRef.current = true
           setIsCapturing(true)
           setSignStatus('capturing')
           frameBufferRef.current = []
@@ -321,7 +354,7 @@ export default function Room() {
         }
       }
       
-      if (isCapturing) {
+      if (isCapturingRef.current) {
         // CAPTURING state - record frames
         const frame = captureFrame()
         if (frame) {
@@ -346,27 +379,34 @@ export default function Room() {
         const timeLong = (now - captureStartTimeRef.current) >= MAX_CAPTURE_SECONDS * 1000
         
         if ((enoughFrames && stableEnough) || timeLong) {
+          console.log('Finishing capture. Frames:', frameBufferRef.current.length, 'LowMotion:', lowMotionCountRef.current)
+          
           // Finish capturing and send for prediction
-          if (frameBufferRef.current.length > 10) {
+          isCapturingRef.current = false
+          setIsCapturing(false)
+          
+          if (frameBufferRef.current.length >= 10) {
             const frames = [...frameBufferRef.current]
             frameBufferRef.current = []
-            setIsCapturing(false)
             isProcessingRef.current = true
+            setSignStatus('processing')
+            
             sendForPrediction(frames).finally(() => {
               isProcessingRef.current = false
               setSignStatus('ready')
             })
           } else {
-            setIsCapturing(false)
             setSignStatus('ready')
           }
           lowMotionCountRef.current = 0
         }
       }
     }, 100) // ~10fps motion detection
-  }, [role, isCapturing, computeMotionScore, captureFrame, sendForPrediction])
+  }, [role, computeMotionScore, captureFrame, sendForPrediction])
 
   const stopMotionDetection = useCallback(() => {
+    isCapturingRef.current = false
+    isProcessingRef.current = false
     setIsCapturing(false)
     setSignStatus('idle')
     if (captureIntervalRef.current) {
@@ -375,6 +415,7 @@ export default function Room() {
     }
     frameBufferRef.current = []
     prevGrayRef.current = null
+    lowMotionCountRef.current = 0
   }, [])
 
   useEffect(() => {
