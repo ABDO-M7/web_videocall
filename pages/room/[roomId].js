@@ -31,13 +31,13 @@ const ICE_SERVERS = {
   iceCandidatePoolSize: 10,
 }
 
-// Sign language recognition config (matching Python script)
-const CLIP_FRAMES = 32
-const MIN_CONFIDENCE = 0.6  // Minimum confidence to accept prediction
-const MIN_MOTION_SCORE = 5.0  // Motion threshold to START capturing (raised from 2.3)
-const LOW_MOTION_FRAMES = 3   // Frames of low motion to STOP capturing
+// Sign language recognition config
+const CLIP_FRAMES = 32        // Model trained on 32 frames
+const MIN_CONFIDENCE = 0.6    // Minimum confidence to accept prediction
+const MIN_MOTION_SCORE = 5.0  // Motion threshold to START capturing
+const LOW_MOTION_FRAMES = 2   // Frames of low motion to STOP capturing (reduced for speed)
 const MAX_CAPTURE_SECONDS = 3.5 // Max capture duration (32 frames at 10fps = 3.2s)
-const REQUEST_INTERVAL = 1.5  // Cooldown between requests (seconds)
+const REQUEST_INTERVAL = 0.5  // Cooldown between requests (reduced for speed)
 
 export default function Room() {
   const router = useRouter()
